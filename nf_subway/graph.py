@@ -65,15 +65,20 @@ class SubwayGraph:
         return self.nodes[name]
     
     def update_process(self, name: str, status: ProcessStatus,
-                       duration: Optional[float] = None):
+                       duration: Optional[float] = None,
+                       annotation: Optional[str] = None):
         """Update the status of an existing process."""
         if name in self.nodes:
             self.nodes[name].status = status
             if duration is not None:
                 self.nodes[name].duration = duration
+            if annotation is not None:
+                self.nodes[name].annotation = annotation
         else:
             # Process not yet seen, create it
-            self.add_process(name, status)
+            node = self.add_process(name, status)
+            if annotation is not None:
+                node.annotation = annotation
     
     def add_dependency(self, parent: str, child: str):
         """Add a dependency relationship between two processes."""

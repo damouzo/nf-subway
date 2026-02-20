@@ -165,13 +165,15 @@ class NextflowMonitor:
         status = parsed.get('status')
         task_id = parsed.get('task_id')
         duration = parsed.get('duration')
+        annotation = parsed.get('annotation')
         
         if process_name and status:
             # Update or add the process
             self.graph.update_process(
                 process_name,
                 status,
-                duration=duration
+                duration=duration,
+                annotation=annotation
             )
         
         return False
