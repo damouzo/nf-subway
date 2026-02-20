@@ -43,20 +43,18 @@ NF-Subway provides a clean, real-time visualization of Nextflow pipeline executi
 
 ## Features
 
-- 🎨 **Git-graph inspired aesthetics** - Clean, minimal, beautiful
-- ⚡ **Real-time monitoring** - See processes update as they run
-- 🚇 **Subway-style layout** - Vertical flow with clean lines
-- 🎬 **Live animation** - Blinking indicators for running processes
-- 🌈 **Color-coded status** - Pending (⏳), Running (⚡), Complete (✅), Failed (❌), Cached (💾)
-- 📊 **Progress tracking** - Duration display for completed processes
-- 🔄 **Multiple modes** - Pipe mode, log file monitoring
+-  **Git-graph inspired aesthetics** - Clean, minimal, beautiful
+-  **Real-time monitoring** - See processes update as they run
+-  **Subway-style layout** - Vertical flow with clean lines
+-  **Live animation** - Blinking indicators for running processes
+-  **Progress tracking** - Duration display for completed processes
 
 ## Installation
 
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/nf-subway.git
+git clone https://github.com/damouzo/nf-subway.git
 cd nf-subway
 pip install -e .
 ```
@@ -156,11 +154,11 @@ The visualization updates in real-time as your pipeline executes, showing:
 
 Inspired by git-graph's clean aesthetics:
 
-- ⏳ **Pending** - Dim gray (waiting to execute)
-- ⚡ **Running** - Bright blue with blink effect (currently executing)
-- ✅ **Completed** - Bright green (successfully finished)
-- ❌ **Failed** - Bright red (execution failed)
-- 💾 **Cached** - Yellow (result from cache)
+-  **Pending** - Dim gray (waiting to execute)
+-  **Running** - Bright blue with blink effect (currently executing)
+-  **Completed** - Bright green (successfully finished)
+-  **Failed** - Bright red (execution failed)
+-  **Cached** - Yellow (result from cache)
 
 ## Development
 

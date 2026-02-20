@@ -20,26 +20,38 @@ class NextflowOutputParser:
     - [4c/d3a7e8] CACHED: PROCESS_NAME (1)
     """
     
-    # Regex patterns for Nextflow output
+    # Regex patterns for Nextflow output (robust, all variants)
+    #   - [hash] [process >] NAME [(N)] [[percent]] [x of y] [✔/FAILED/CACHED]
+    #   - [hash] NAME ...etc (no "process >")
+    #   Supports almost every real-world log format.
     PROCESS_PATTERN = re.compile(
-        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(?:process\s+>|PROCESS:)\s+(\S+)\s*'
-        r'(?:\((\d+)\))?\s*\[?\s*(\d+%?)\s*\]?\s*(\d+\s+of\s+\d+)?'
+        r'\[(?P<task_id>[a-f0-9]{2}/[a-f0-9]{6})\]'                # [4c/d3a7e8]
+        r'\s+'
+        r'(?:(?:process|PROCESS)\s*[>:])?\s*'                     # (optional "process >")
+        r'(?P<process_name>\S+)'                                    # process name
+        r'(?:\s*\((?P<task_num>\d+)\))?'                         # optional (N)
+        r'(?:\s*\[(?P<progress>\d+%?)?\])?'                      # optional [progress]
+        r'(?:\s*(?P<count>\d+\s+of\s+\d+))?'                    # optional count
+        r'(?P<suffix>.*)$',                                         # anything after, to detect status
+        re.IGNORECASE
     )
-    
+    # CACHED pattern unchanged, but now case-insensitive
+    CACHED_PATTERN = re.compile(
+        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(?:CACHED|cached):\s*(\S+)',
+        re.IGNORECASE
+    )
+    # COMPLETION remains
     COMPLETION_PATTERN = re.compile(
         r'\[([a-f0-9]{2}/[a-f0-9]{6})\].*?(\S+)\s*\((\d+)\)\s*\[.*?(\d+\.\d+)s\]'
     )
-    
-    CACHED_PATTERN = re.compile(
-        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(?:CACHED|cached):\s*(\S+)'
-    )
-    
+    # FAILED/ERROR detection
     FAILURE_PATTERN = re.compile(
-        r'(?:ERROR|FAILED|Error executing process).*?[>\s]+[\'"]?(\S+)[\'"]?'
+        r'(?:ERROR|FAILED|Error executing process).*?[>\s]+[\'"]?(\S+)[\'"]?',
+        re.IGNORECASE
     )
-    
     WORKFLOW_COMPLETE = re.compile(
-        r'(?:Completed at|Workflow completed|Pipeline completed)'
+        r'(?:Completed at|Workflow completed|Pipeline completed)',
+        re.IGNORECASE
     )
     
     def __init__(self):
@@ -78,11 +90,17 @@ class NextflowOutputParser:
                 'annotation': annotation,
             }
         
-        # Check for process execution line
+        # Check for process execution line (robust to variants)
         process_match = self.PROCESS_PATTERN.search(line)
         if process_match:
-            task_id, process_name, task_num, progress, count = process_match.groups()
-            # Build annotation identical to log output
+            gd = process_match.groupdict()
+            task_id = gd.get('task_id')
+            process_name = gd.get('process_name')
+            task_num = gd.get('task_num')
+            progress = gd.get('progress')
+            count = gd.get('count')
+            suffix = gd.get('suffix') or ''
+            # Compose annotation in always-the-same way (match log visually)
             annotation = f"[{task_id}] process > {process_name}"
             if task_num:
                 annotation += f" ({task_num})"
@@ -91,20 +109,26 @@ class NextflowOutputParser:
             if count:
                 annotation += f" {count}"
 
-            # Determine status from progress
-            status = ProcessStatus.RUNNING
-            if progress == '100%' or (count and count.split()[0] == count.split()[-1]):
-                # Check if line has completion marker
-                if '\u2714' in line or 'COMPLETED' in line.upper():
-                    status = ProcessStatus.COMPLETED
-            elif progress == '0%' or progress == '0':
-                status = ProcessStatus.PENDING
-            
+            detected_status = ProcessStatus.RUNNING
+            # If cached, completed, or failed are present in suffix, assign accordingly
+            if 'cached' in suffix.lower():
+                detected_status = ProcessStatus.CACHED
+            elif '\u2714' in line or 'completed' in suffix.lower() or '✔' in suffix:
+                detected_status = ProcessStatus.COMPLETED
+            elif 'failed' in suffix.lower():
+                detected_status = ProcessStatus.FAILED
+            elif progress and (progress == '0%' or progress == '0'):
+                detected_status = ProcessStatus.PENDING
+            elif not progress and not count:
+                detected_status = ProcessStatus.PENDING
+
+            # Pick progress to display for graph (percent beats count, else fallback)
+            prog_display = progress or count or '0%'
             return {
                 'process': process_name,
-                'status': status,
+                'status': detected_status,
                 'task_id': task_id,
-                'progress': progress or count or '0%',
+                'progress': prog_display,
                 'duration': None,
                 'job_id': task_id,
                 'annotation': annotation,
