@@ -7,3 +7,4 @@ __pycache__/
 .venv/
 examples/work/*
 examples/results/*
+AGENTS.md
