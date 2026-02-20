@@ -23,8 +23,9 @@ class NextflowOutputParser:
     # Regex patterns for Nextflow output
     # Pattern for standard process execution lines like:
     # [18/f4103b] QUALITY_CHECK (1) [100%] 3 of 3 ✔
+    # [6b/27f290] ALIGNMENT_BASED_QUANTIFICATION:ALIGN_READS (3) [100%] 3 of 3 ✔
     PROCESS_PATTERN = re.compile(
-        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(\S+(?::\S+)?)\s*'
+        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+([\w:]+)\s*'
         r'(?:\((\d+)\))?\s*\[?\s*(\d+)%?\s*\]?\s*(\d+\s+of\s+\d+)?'
     )
     
@@ -67,7 +68,9 @@ class NextflowOutputParser:
             'duration': float,       # Duration in seconds (if completed)
         }
         """
-        line = line.strip()
+        # Remove ANSI escape codes (colors, formatting) that Nextflow outputs
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        line = ansi_escape.sub('', line).strip()
         
         # Check for cached process
         cached_match = self.CACHED_PATTERN.search(line)

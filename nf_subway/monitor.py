@@ -50,6 +50,9 @@ class NextflowMonitor:
         
         # Thread-safe queue for output lines
         self.output_queue = Queue()
+        
+        # Track previous process for simple dependency inference
+        self.last_process = None
     
     def start(self):
         """Start monitoring the input stream."""
@@ -175,6 +178,27 @@ class NextflowMonitor:
                 duration=duration,
                 annotation=annotation
             )
+            
+            # Infer simple sequential dependency if this is a new process
+            # This helps create visual connections even without DAG info
+            if process_name not in self.graph.nodes:
+                # This shouldn't happen since update_process creates it, but just in case
+                pass
+            elif self.last_process and self.last_process != process_name:
+                # Try to infer if there's a dependency based on sub-workflow structure
+                # E.g., WORKFLOW:PROCESS_A -> WORKFLOW:PROCESS_B likely have a dependency
+                if ':' in process_name and ':' in self.last_process:
+                    last_workflow = self.last_process.split(':')[0]
+                    curr_workflow = process_name.split(':')[0]
+                    
+                    # If same workflow, assume sequential dependency
+                    if last_workflow == curr_workflow:
+                        self.graph.add_dependency(self.last_process, process_name)
+                # For top-level processes or cross-workflow, we can't reliably infer
+                # so we don't add a dependency (to avoid false connections)
+            
+            # Update last seen process
+            self.last_process = process_name
         
         return False
 

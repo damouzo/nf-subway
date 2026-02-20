@@ -1,4 +1,4 @@
-# NF-Subway 🚇
+# NF-Subway (work in progress)
 
 Git-graph style visualization for Nextflow pipelines.
 
