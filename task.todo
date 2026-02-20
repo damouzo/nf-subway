@@ -1,0 +1,27 @@
+# Main TODOs for nf-subway
+
+- [ ] [Parser] Support both Nextflow output formats:
+      - '[id] process > NAME ...'
+      - '[id] NAME ...'
+- [ ] [Renderer] True git-graph style visualization:
+      - Fixed color palette for lanes/branches (as in git-graph)
+      - Branching and connectors with clear Unicode lines
+      - Right-aligned annotations: job ID, name, progress
+      - Support both 'vertical', 'horizontal', and 'auto'
+      - Truncate content where space is limited
+- [ ] [CLI] Implement the --orientation flag with correct propagation
+- [ ] [Monitor] Pass orientation from CLI through the monitor to renderer
+- [ ] [Tests] Cover both Nextflow formats and all layouts
+      - Should include real-world Nextflow pipeline outputs
+      - Golden output comparisons or visual snapshotting for regression
+- [ ] [UX] Clear message if no process detected
+      - Explain when output line format is not recognized
+- [ ] [Docs] Keep AGENTS.md thorough and current
+- [ ] [Cleanup] Use a focused and accurate .gitignore
+- [ ] [Demo] Include a minimal Nextflow pipeline for quick demo/testing
+- [ ] [Final] Deliver a concise README for install and usage
+
+# Optional
+- [ ] Export graph visualization to SVG/HTML or image
+- [ ] Configurable dark/light mode
+- [ ] CI/CD integration: test, lint, type-check hooks

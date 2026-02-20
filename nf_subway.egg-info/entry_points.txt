@@ -1,0 +1,2 @@
+[console_scripts]
+nf-subway = nf_subway.cli:main

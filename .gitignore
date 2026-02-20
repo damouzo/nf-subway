@@ -1,0 +1,9 @@
+# nf-subway
+.nextflow*
+logs/
+*.log
+__pycache__/
+*.pyc
+.venv/
+examples/work/*
+examples/results/*
