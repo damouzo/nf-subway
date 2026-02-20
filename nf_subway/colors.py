@@ -63,15 +63,6 @@ class GitGraphColors:
         """Return color from palette for a given branch/lane index (cycled)."""
         return cls.BRANCH_PALETTE[lane % len(cls.BRANCH_PALETTE)]
     
-    # Icons with colors
-    ICONS: Dict[ProcessStatus, str] = {
-        ProcessStatus.PENDING: f"[{PENDING}]⏳[/{PENDING}]",
-        ProcessStatus.RUNNING: f"[{RUNNING}]⚡[/{RUNNING}]",
-        ProcessStatus.COMPLETED: f"[{COMPLETED}]✅[/{COMPLETED}]",
-        ProcessStatus.FAILED: f"[{FAILED}]❌[/{FAILED}]",
-        ProcessStatus.CACHED: f"[{CACHED}]💾[/{CACHED}]",
-    }
-    
     @classmethod
     def get_process_style(cls, status: ProcessStatus) -> str:
         """Get the Rich style string for a process status."""
@@ -89,8 +80,9 @@ class GitGraphColors:
     
     @classmethod
     def get_icon(cls, status: ProcessStatus) -> str:
-        """Get the colored icon for a process status."""
-        return cls.ICONS.get(status, "○")
+        """Get a simple dot for a process status (no emojis, just colored dots)."""
+        # Return empty string - we'll use the dots in the grid already
+        return ""
 
 
 class BlinkEffect:

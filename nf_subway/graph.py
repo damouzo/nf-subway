@@ -96,12 +96,15 @@ class SubwayGraph:
     
     def assign_lanes(self):
         """
-        Assign horizontal lanes to processes for parallel visualization.
+        Assign horizontal lanes to processes using git-graph inspired algorithm.
         
-        Uses a simple algorithm:
-        1. Root processes start in lane 0
-        2. If a process has multiple children, assign them to different lanes
-        3. Merge back when possible
+        Key principles:
+        1. Processes in sequence stay in the same lane
+        2. Parallel processes get different lanes  
+        3. Lanes are reused when branches complete
+        4. Minimize lane switching
+        
+        This creates a more compact, readable visualization.
         """
         if self.lanes_assigned:
             return
@@ -110,29 +113,90 @@ class SubwayGraph:
         for node in self.nodes.values():
             node.lane = 0
         
-        # Simple lane assignment: processes in execution order
-        # Parallel processes detected by tracking active lanes
-        active_lanes: Set[int] = set()
-        next_lane = 0
+        # Track which lanes are currently "active" (have uncommitted work)
+        # Maps lane_id -> process_name occupying it
+        active_lanes: Dict[int, str] = {}
+        reserved_lanes: Dict[str, int] = {}  # child_name -> reserved lane number
+        
+        # Build reverse map: process -> its position in execution order
+        exec_positions = {name: idx for idx, name in enumerate(self.execution_order)}
         
         for process_name in self.execution_order:
             node = self.nodes[process_name]
             
-            # If node is a root or all parents are done, it can use any lane
-            if node.is_root or all(
-                self.nodes[p].status == ProcessStatus.COMPLETED 
-                for p in node.parents
-            ):
-                # Find first available lane
-                lane = 0
-                while lane in active_lanes:
-                    lane += 1
-                node.lane = lane
-                active_lanes.add(lane)
-                next_lane = max(next_lane, lane + 1)
+            # Check if this node has a pre-reserved lane from a parent split
+            if process_name in reserved_lanes:
+                node.lane = reserved_lanes[process_name]
+                active_lanes[node.lane] = process_name
+                del reserved_lanes[process_name]
+                
             else:
-                # Inherit lane from first parent
-                node.lane = self.nodes[node.parents[0]].lane
+                # Get parent lanes
+                parent_lanes = [
+                    self.nodes[p].lane 
+                    for p in node.parents 
+                    if p in self.nodes
+                ]
+                
+                if not parent_lanes:
+                    # Root process: use lane 0 or first available
+                    if 0 not in active_lanes:
+                        node.lane = 0
+                        active_lanes[0] = process_name
+                    else:
+                        # Find first available lane
+                        lane = 0
+                        while lane in active_lanes:
+                            lane += 1
+                        node.lane = lane
+                        active_lanes[lane] = process_name
+                
+                elif len(parent_lanes) == 1:
+                    # Single parent: inherit its lane
+                    parent_lane = parent_lanes[0]
+                    node.lane = parent_lane
+                    active_lanes[parent_lane] = process_name
+                
+                else:
+                    # Multiple parents (merge): use the leftmost parent's lane
+                    node.lane = min(parent_lanes)
+                    active_lanes[node.lane] = process_name
+                    
+                    # Free up the other parent lanes if they're done
+                    for p_lane in parent_lanes:
+                        if p_lane != node.lane:
+                            # Check if this lane has any other active children
+                            parent_name = active_lanes.get(p_lane)
+                            if parent_name:
+                                parent_node = self.nodes.get(parent_name)
+                                if parent_node:
+                                    # Is this the last child of that lane?
+                                    is_last = all(
+                                        c == process_name or 
+                                        exec_positions.get(c, 999999) < exec_positions[process_name]
+                                        for c in parent_node.children
+                                    )
+                                    if is_last and p_lane in active_lanes:
+                                        del active_lanes[p_lane]
+            
+            # If this node has multiple children, reserve lanes for non-first children
+            if len(node.children) > 1:
+                # Sort children by execution order for consistency
+                sorted_children = sorted(node.children, key=lambda c: exec_positions.get(c, 999999))
+                
+                # First child will inherit this node's lane (handled above)
+                # Other children need new lanes
+                for i, child_name in enumerate(sorted_children):
+                    if i == 0:
+                        continue  # First child inherits lane normally
+                    
+                    if child_name in self.nodes:
+                        # Find a free lane for this child
+                        lane = 0
+                        used_lanes = set(active_lanes.keys()) | set(reserved_lanes.values())
+                        while lane in used_lanes:
+                            lane += 1
+                        reserved_lanes[child_name] = lane
         
         self.lanes_assigned = True
     

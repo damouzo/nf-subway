@@ -97,6 +97,7 @@ class NextflowMonitor:
         """Main update loop that processes output and updates display."""
         update_interval = 1.0 / self.refresh_rate
         last_update = time.time()
+        pipeline_complete = False
         
         while self.is_running:
             # Process all available lines
@@ -109,7 +110,10 @@ class NextflowMonitor:
                         self.is_running = False
                         break
                     
-                    self._process_line(line)
+                    # Check if pipeline completed
+                    if self._process_line(line):
+                        pipeline_complete = True
+                    
                     lines_processed += 1
             except Empty:
                 pass
@@ -121,15 +125,30 @@ class NextflowMonitor:
                     self.renderer.update()
                 last_update = current_time
             
+            # If pipeline completed and no more input, exit gracefully
+            if pipeline_complete and self.output_queue.empty():
+                time.sleep(1)  # Final update display
+                self.is_running = False
+                break
+            
             # Small sleep to prevent CPU spinning
             time.sleep(0.01)
     
     def _process_line(self, line: str):
-        """Process a single line of output."""
+        """Process a single line of output. Returns True if pipeline completed."""
         parsed = self.parser.parse_and_update(line)
         
         if not parsed:
-            return
+            # Check for pipeline completion in raw line
+            if 'Pipeline completed' in line or 'Execution status: OK' in line:
+                # Mark any running processes as completed
+                for process in self.graph.get_active_processes():
+                    self.graph.update_process(
+                        process.name,
+                        ProcessStatus.COMPLETED
+                    )
+                return True  # Signal completion
+            return False
         
         # Handle workflow completion event
         if parsed.get('event') == 'workflow_complete':
@@ -139,7 +158,7 @@ class NextflowMonitor:
                     process.name,
                     ProcessStatus.COMPLETED
                 )
-            return
+            return True  # Signal completion
         
         # Extract process information
         process_name = parsed.get('process')
@@ -154,6 +173,8 @@ class NextflowMonitor:
                 status,
                 duration=duration
             )
+        
+        return False
 
 
 class FileMonitor(NextflowMonitor):
