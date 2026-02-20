@@ -1,4 +1,4 @@
-# NF-Subway
+# NF-Subway 🚇
 
 Git-graph style visualization for Nextflow pipelines.
 
@@ -11,8 +11,14 @@ NF-Subway provides a clean, real-time visualization of Nextflow pipeline executi
 -  **Git-graph inspired aesthetics** - Clean, minimal, beautiful
 -  **Real-time monitoring** - See processes update as they run
 -  **Subway-style layout** - Vertical flow with clean lines
--  **Live animation** - Blinking indicators for running processes
+-  **Live animation** - Blinking colored dots for running processes
 -  **Progress tracking** - Duration display for completed processes
+-  **Colored status indicators** - Simple dots (no emoji icons):
+   - Gray: pending
+   - Blue (blinking): running
+   - Green: completed
+   - Red: failed
+   - Yellow: cached
 
 ## Installation
 
