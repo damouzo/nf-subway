@@ -29,6 +29,14 @@
 - [ ] [Renderer] Pixel-perfect terminal git-graph
       - Match lane width, dot/line alignment, and merge geometry to reference
       - Remove all visual discontinuities and maximize resemblance to git-graph
+
+- [ ] [CLI] Repair --no-original flag functionality
+      - Is hidden but nf-subway not show perfectly without it, so should be fixed and documented
+
+- [ ] [CLI] --orientation horizontal show dots but not lines or process names (bug)
+      - Lines should be rendered in horizontal mode as well, but currently only dots are shown
+      - Process names and annotations should also be visible in horizontal layout
+
 # Optional
 - [ ] Export graph visualization to SVG/HTML or image
 - [ ] Configurable dark/light mode
