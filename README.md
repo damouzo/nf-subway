@@ -66,6 +66,7 @@ Options:
   --version              Show version and exit
   --log FILE            Monitor a Nextflow log file
   --refresh RATE        Refresh rate in updates per second (default: 4)
+  --orientation MODE    Layout: vertical, horizontal, auto (default: auto)
   --no-original         Hide original Nextflow output
 ```
 
@@ -168,7 +169,6 @@ nf-subway/
 
 ## Future Enhancements
 
-- [ ] Horizontal layout option for wide terminals
 - [ ] Resource usage visualization (CPU, memory)
 - [ ] Interactive mode with process inspection
 - [ ] Export to HTML for sharing

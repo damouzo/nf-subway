@@ -74,13 +74,15 @@ class SubwayRenderer:
         num_cols = max_lane + 1
         
         grid = GridRenderer(num_cols, num_rows)
-        chars = CharacterSet.thin()
+        chars = CharacterSet.round()
         
         # Build a mapping of process names to their row indices
         process_rows = {}
+        lane_rows = {}
         for idx, node in enumerate(processes):
             row = idx * 2
             process_rows[node.name] = row
+            lane_rows.setdefault(node.lane, []).append(row)
         
         # Draw each process
         for idx, node in enumerate(processes):
@@ -135,9 +137,9 @@ class SubwayRenderer:
                         if parent_lane < node.lane:
                             grid.set_char(connector_row, parent_lane, chars.CORNER_LD, dot_color)
                             grid.draw_horizontal_line(connector_row, parent_lane, node.lane, dot_color)
-                            grid.set_char(connector_row, node.lane, chars.CORNER_RU, dot_color)
+                            grid.set_char(connector_row, node.lane, chars.ARROW_RIGHT, dot_color)
                         else:
-                            grid.set_char(connector_row, node.lane, chars.CORNER_RD, dot_color)
+                            grid.set_char(connector_row, node.lane, chars.ARROW_LEFT, dot_color)
                             grid.draw_horizontal_line(connector_row, node.lane, parent_lane, dot_color)
                             grid.set_char(connector_row, parent_lane, chars.CORNER_LU, dot_color)
             
@@ -154,6 +156,16 @@ class SubwayRenderer:
                         # Simple vertical continuation
                         grid.set_char(connector_row, node.lane, chars.VERTICAL, dot_color)
                     # Lane changes will be drawn by the child process
+
+        # Draw continuous vertical lane strokes between nodes in the same lane
+        # to avoid broken/discontinuous branch appearance.
+        for lane, rows in lane_rows.items():
+            ordered_rows = sorted(set(rows))
+            if len(ordered_rows) < 2:
+                continue
+            lane_color = self.colors.branch_color(lane)
+            for row_start, row_end in zip(ordered_rows, ordered_rows[1:]):
+                grid.draw_vertical_line(row_start, row_end, lane, lane_color)
         
         # Build result with annotations
         result = []
@@ -183,7 +195,7 @@ class SubwayRenderer:
             if len(annotation) > max_ann_width:
                 annotation = annotation[:max_ann_width-3] + "..."
             
-            line.append("  ")
+            line.append(" ")
             line.append(annotation, style=self._get_style(node))
             
             result.append(line)
@@ -326,7 +338,7 @@ class SubwayRenderer:
             text,
             title=title,
             border_style=self.colors.SEPARATOR,
-            padding=(1, 2),
+            padding=(0, 1),
         )
     
     def render_inline(self):

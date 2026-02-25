@@ -45,6 +45,10 @@ class CharacterSet:
     MERGE_DOWN = '┬'
     MERGE_UP = '┴'
     CROSS = '┼'
+
+    # Directional hints for branch transitions
+    ARROW_RIGHT = '▶'
+    ARROW_LEFT = '◀'
     
     @classmethod
     def thin(cls):
@@ -78,7 +82,7 @@ class GridRenderer:
         text = grid.to_rich_text()
     """
     
-    COLUMN_WIDTH = 4  # Same as git-graph
+    COLUMN_WIDTH = 3
     
     def __init__(self, num_columns: int, num_rows: int, chars: Optional[CharacterSet] = None):
         """
@@ -143,8 +147,20 @@ class GridRenderer:
             col: Column to draw in
             color: Optional color style
         """
+        if row_start > row_end:
+            row_start, row_end = row_end, row_start
+
         for row in range(row_start + 1, row_end):
-            self.set_char(row, col, self.chars.VERTICAL, color)
+            if row < 0 or row >= self.num_rows or col < 0 or col >= self.num_columns:
+                continue
+
+            x = self._col_to_x(col)
+            existing = self.grid[row][x].char
+
+            if existing == self.chars.HORIZONTAL:
+                self.grid[row][x] = GridCell(char=self.chars.CROSS, color=color)
+            elif existing == self.chars.SPACE:
+                self.grid[row][x] = GridCell(char=self.chars.VERTICAL, color=color)
     
     def draw_horizontal_line(self, row: int, col_start: int, col_end: int,
                             color: Optional[str] = None):
@@ -165,7 +181,10 @@ class GridRenderer:
             x_start, x_end = x_end, x_start
         
         for x in range(x_start + 1, x_end):
-            if self.grid[row][x].char == ' ':
+            existing = self.grid[row][x].char
+            if existing == self.chars.VERTICAL:
+                self.grid[row][x] = GridCell(char=self.chars.CROSS, color=color)
+            elif existing == self.chars.SPACE:
                 self.grid[row][x] = GridCell(char=self.chars.HORIZONTAL, color=color)
     
     def draw_connector(self, row: int, col: int, from_dirs: List[str], to_dirs: List[str],
@@ -248,10 +267,10 @@ class GridRenderer:
                 # Merging right into left
                 self.set_char(row, left_col, self.chars.SPLIT_RIGHT, color)
                 self.draw_horizontal_line(row, left_col, right_col, color)
-                self.set_char(row, right_col, self.chars.CORNER_LU, color)
+                self.set_char(row, right_col, self.chars.ARROW_LEFT, color)
             elif to_col == right_col:
                 # Merging left into right
-                self.set_char(row, left_col, self.chars.CORNER_LD, color)
+                self.set_char(row, left_col, self.chars.ARROW_RIGHT, color)
                 self.draw_horizontal_line(row, left_col, right_col, color)
                 self.set_char(row, right_col, self.chars.SPLIT_LEFT, color)
             else:
@@ -297,10 +316,10 @@ class GridRenderer:
                 # Splitting left to right
                 self.set_char(row, left_col, self.chars.SPLIT_RIGHT, color)
                 self.draw_horizontal_line(row, left_col, right_col, color)
-                self.set_char(row, right_col, self.chars.CORNER_RU, color)
+                self.set_char(row, right_col, self.chars.ARROW_RIGHT, color)
             elif from_col == right_col:
                 # Splitting right to left
-                self.set_char(row, left_col, self.chars.CORNER_RD, color)
+                self.set_char(row, left_col, self.chars.ARROW_LEFT, color)
                 self.draw_horizontal_line(row, left_col, right_col, color)
                 self.set_char(row, right_col, self.chars.SPLIT_LEFT, color)
             else:

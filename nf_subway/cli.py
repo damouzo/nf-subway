@@ -76,7 +76,12 @@ Examples:
             print(f"Error: Log file not found: {args.log}", file=sys.stderr)
             print("The log file will be monitored once it's created.", file=sys.stderr)
         
-        monitor_nextflow_logfile(args.log, orientation=args.orientation)
+        monitor_nextflow_logfile(
+            args.log,
+            orientation=args.orientation,
+            refresh_rate=args.refresh,
+            show_original=not args.no_original,
+        )
     else:
         # stdin pipe mode (default)
         if sys.stdin.isatty():
@@ -86,7 +91,11 @@ Examples:
                   file=sys.stderr)
             sys.exit(1)
         
-        monitor_nextflow_stdout(orientation=args.orientation)
+        monitor_nextflow_stdout(
+            orientation=args.orientation,
+            refresh_rate=args.refresh,
+            show_original=not args.no_original,
+        )
 
 
 

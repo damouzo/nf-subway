@@ -5,7 +5,7 @@ Extracts process execution information from the live Nextflow output stream.
 """
 
 import re
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from .colors import ProcessStatus
 
 
@@ -21,13 +21,13 @@ class NextflowOutputParser:
     """
     
     # Regex patterns for Nextflow output
-    # Pattern for standard process execution lines like:
-    # [18/f4103b] QUALITY_CHECK (1) [100%] 3 of 3 ✔
-    # [6b/27f290] ALIGNMENT_BASED_QUANTIFICATION:ALIGN_READS (3) [100%] 3 of 3 ✔
-    PROCESS_PATTERN = re.compile(
-        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+([\w:]+)\s*'
-        r'(?:\((\d+)\))?\s*\[?\s*(\d+)%?\s*\]?\s*(\d+\s+of\s+\d+)?'
+    TASK_PREFIX_PATTERN = re.compile(r"^\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(.+)$")
+    LEFT_PROCESS_PATTERN = re.compile(
+        r"^(?:(?:process)\s*>\s*)?(?P<name>.+?)(?:\s+\((?P<task_num>\d+)\))?\s*$",
+        re.IGNORECASE,
     )
+    COUNT_PATTERN = re.compile(r"(\d+)\s+of\s+(\d+)", re.IGNORECASE)
+    PERCENT_PATTERN = re.compile(r"\[?\s*(\d+)\s*%\s*\]?")
     
     # Pattern for completion with duration
     COMPLETION_PATTERN = re.compile(
@@ -35,9 +35,7 @@ class NextflowOutputParser:
     )
     
     # Pattern for cached processes
-    CACHED_PATTERN = re.compile(
-        r'\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(?:CACHED|cached):\s*(\S+)'
-    )
+    CACHED_PATTERN = re.compile(r"^(?:CACHED|cached):\s*(.+)$")
     
     # Pattern for failures
     FAILURE_PATTERN = re.compile(
@@ -45,12 +43,45 @@ class NextflowOutputParser:
     )
     
     # Pattern for workflow completion
-    WORKFLOW_COMPLETE = re.compile(
-        r'(?:Completed at|Workflow completed|Pipeline completed|Execution status: OK)'
-    )
+    WORKFLOW_COMPLETE = re.compile(r"(?:Completed at|Workflow completed|Pipeline completed|Execution status: OK)")
     
     def __init__(self):
         self.seen_processes: Dict[str, dict] = {}
+
+    def _extract_progress(self, text: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        """Extract progress text and numeric done/total if present."""
+        count_match = self.COUNT_PATTERN.search(text)
+        if count_match:
+            done = int(count_match.group(1))
+            total = int(count_match.group(2))
+            return f"{done} of {total}", done, total
+
+        percent_match = self.PERCENT_PATTERN.search(text)
+        if percent_match:
+            percent = int(percent_match.group(1))
+            return f"{percent}%", percent, 100
+
+        return None, None, None
+
+    def _status_from_line(self, line: str, done: Optional[int], total: Optional[int]) -> ProcessStatus:
+        """Infer process status from line markers and progress values."""
+        upper_line = line.upper()
+
+        if "CACHED" in upper_line:
+            return ProcessStatus.CACHED
+        if "FAILED" in upper_line or "ERROR" in upper_line:
+            return ProcessStatus.FAILED
+        if "✔" in line:
+            return ProcessStatus.COMPLETED
+
+        if done is not None and total is not None:
+            if total > 0 and done >= total:
+                return ProcessStatus.COMPLETED
+            if done <= 0:
+                return ProcessStatus.PENDING
+            return ProcessStatus.RUNNING
+
+        return ProcessStatus.RUNNING
     
     def parse_line(self, line: str) -> Optional[Dict]:
         """
@@ -72,58 +103,70 @@ class NextflowOutputParser:
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         line = ansi_escape.sub('', line).strip()
         
-        # Check for cached process
-        cached_match = self.CACHED_PATTERN.search(line)
-        if cached_match:
-            task_id, process_name = cached_match.groups()
-            annotation = f"[{task_id}] process > {process_name} [CACHED]"
-            return {
-                'process': process_name,
-                'status': ProcessStatus.CACHED,
-                'task_id': task_id,
-                'progress': '100%',
-                'duration': 0.0,
-                'job_id': task_id,
-                'annotation': annotation,
-            }
-        
-        # Check for process execution line
-        process_match = self.PROCESS_PATTERN.search(line)
-        if process_match:
-            task_id, process_name, task_num, progress, count = process_match.groups()
-            # Build annotation identical to log output
-            annotation = f"[{task_id}] process > {process_name}"
-            if task_num:
-                annotation += f" ({task_num})"
-            if progress:
-                annotation += f" [{progress}]"
-            if count:
-                annotation += f" {count}"
+        # Main task lines: [id] process > NAME ...  OR [id] NAME ...
+        task_match = self.TASK_PREFIX_PATTERN.match(line)
+        if task_match:
+            task_id, rest = task_match.groups()
 
-            # Determine status from progress
-            status = ProcessStatus.RUNNING
-            if progress == '100%' or (count and count.split()[0] == count.split()[-1]):
-                # Check if line has completion marker
-                if '\u2714' in line or 'COMPLETED' in line.upper():
-                    status = ProcessStatus.COMPLETED
-            elif progress == '0%' or progress == '0':
-                status = ProcessStatus.PENDING
-            
-            return {
-                'process': process_name,
-                'status': status,
-                'task_id': task_id,
-                'progress': progress or count or '0%',
-                'duration': None,
-                'job_id': task_id,
-                'annotation': annotation,
-            }
+            # Split possible right-side progress section (e.g. "| 3 of 3 ✔")
+            if "|" in rest:
+                left_raw, right_raw = rest.split("|", 1)
+                left_part = left_raw.strip()
+                right_part = right_raw.strip()
+            else:
+                left_part = rest.strip()
+                right_part = ""
+
+            # Cached format in task lines
+            cached_match = self.CACHED_PATTERN.match(left_part)
+            if cached_match:
+                process_name = cached_match.group(1).strip()
+                annotation = f"[{task_id}] {process_name} | CACHED"
+                return {
+                    "process": process_name,
+                    "status": ProcessStatus.CACHED,
+                    "task_id": task_id,
+                    "progress": "CACHED",
+                    "duration": 0.0,
+                    "job_id": task_id,
+                    "annotation": annotation,
+                }
+
+            left_match = self.LEFT_PROCESS_PATTERN.match(left_part)
+            if left_match:
+                process_name = left_match.group("name").strip()
+                task_num = left_match.group("task_num")
+
+                # Ignore non-process informational lines such as "executor > local (32)"
+                if process_name.lower().startswith("executor >"):
+                    return None
+
+                progress_text, done, total = self._extract_progress(f"{right_part} {left_part}".strip())
+                status = self._status_from_line(line, done, total)
+
+                annotation = f"[{task_id}] {process_name}"
+                if task_num:
+                    annotation += f" ({task_num})"
+                if progress_text:
+                    annotation += f" | {progress_text}"
+                if "✔" in line:
+                    annotation += " ✔"
+
+                return {
+                    "process": process_name,
+                    "status": status,
+                    "task_id": task_id,
+                    "progress": progress_text or "",
+                    "duration": None,
+                    "job_id": task_id,
+                    "annotation": annotation,
+                }
         
         # Check for completion with duration
         completion_match = self.COMPLETION_PATTERN.search(line)
         if completion_match:
             task_id, process_name, task_num, duration = completion_match.groups()
-            annotation = f"[{task_id}] process > {process_name} ({task_num}) [100%] COMPLETED"
+            annotation = f"[{task_id}] {process_name} ({task_num}) | 100% ✔"
             return {
                 'process': process_name,
                 'status': ProcessStatus.COMPLETED,
