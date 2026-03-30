@@ -118,8 +118,11 @@ class SubwayGraph:
         - Main-branch (no subworkflow prefix) → lane 0
         - Each distinct subworkflow prefix → its own unique lane
 
-        This mirrors git-graph's branch coloring: all commits on the same
-        branch share a lane and color.
+        Nextflow truncates long subworkflow names differently depending on
+        terminal width, so the same workflow can appear as both its full name
+        (e.g. "alignment_based_quantification") and a short prefix
+        (e.g. "ali").  We unify them by checking whether any known prefix is
+        a leading substring of the incoming prefix, or vice versa.
         """
         if self.lanes_assigned:
             return
@@ -127,11 +130,23 @@ class SubwayGraph:
         prefix_to_lane: Dict[str, int] = {"": 0}  # main branch always lane 0
         next_lane = [1]
 
+        def canonical(prefix: str) -> str:
+            """Return the already-known key that matches prefix, or prefix itself."""
+            if not prefix:
+                return ""  # main branch always maps to itself; "" starts every string
+            for known in prefix_to_lane:
+                if not known:
+                    continue
+                if known.startswith(prefix) or prefix.startswith(known):
+                    return known
+            return prefix
+
         def get_lane(prefix: str) -> int:
-            if prefix not in prefix_to_lane:
-                prefix_to_lane[prefix] = next_lane[0]
+            key = canonical(prefix)
+            if key not in prefix_to_lane:
+                prefix_to_lane[key] = next_lane[0]
                 next_lane[0] += 1
-            return prefix_to_lane[prefix]
+            return prefix_to_lane[key]
 
         for name in self.execution_order:
             node = self.nodes[name]

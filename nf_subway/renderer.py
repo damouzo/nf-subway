@@ -353,27 +353,27 @@ class SubwayRenderer:
             return f"{hours}h {minutes}m"
 
     
-    def render_panel(self) -> Panel:
-        """Render the graph as a Rich Panel, fitting within the terminal height."""
-        available = max(4, (self.console.height or 40) - 4)
+    def render_panel(self) -> Text:
+        """Render the graph with a left border and title, no full box."""
+        # Reserve 1 row for the title line
+        available = max(4, (self.console.height or 40) - 2)
         lines = self.render_to_lines(max_rows=available)
 
-        text = Text()
-        for i, line in enumerate(lines):
-            text.append_text(line)
-            if i < len(lines) - 1:
-                text.append("\n")
-        
-        # Get stats for the title
         stats = self.graph.get_stats()
-        title = self._format_title(stats)
-        
-        return Panel(
-            text,
-            title=title,
-            border_style=self.colors.SEPARATOR,
-            padding=(0, 1),
-        )
+
+        result = Text()
+        # Title row
+        result.append(" nf-subway", style="bold bright_blue")
+        result.append("  ", style="")
+        result.append(self._format_title(stats), style="dim")
+        result.append("\n")
+        # Content rows
+        for i, line in enumerate(lines):
+            result.append_text(line)
+            if i < len(lines) - 1:
+                result.append("\n")
+
+        return result
     
     def render_inline(self):
         """
@@ -412,21 +412,21 @@ class SubwayRenderer:
             return live
     
     def _format_title(self, stats: dict) -> str:
-        """Format the title with stats."""
+        """Format the stats portion of the header (process counts)."""
         total = stats['total']
         running = stats['running']
         completed = stats['completed']
         failed = stats['failed']
-        
-        parts = [f"NF-Subway ({total} processes)"]
-        
+
+        parts = [f"{total} processes"]
+
         if running > 0:
             parts.append(f"{running} running")
         if completed > 0:
             parts.append(f"{completed} done")
         if failed > 0:
             parts.append(f"{failed} failed")
-        
+
         return " | ".join(parts)
     
     def tick_animation(self):
