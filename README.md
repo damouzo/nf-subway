@@ -1,6 +1,6 @@
 # nf-subway
 
-Terminal visualization for Nextflow pipelines, enabling easy interpretation of different processes across multiple subworkflows simultaneously.
+A TUI that turns your Nextflow pipeline into a live colored lanes, animated nodes, and real-time progress inside your terminal.
 
 ![nf-subway preview](docs/images/Image.png)
 
