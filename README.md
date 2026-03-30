@@ -39,24 +39,6 @@ Other options:
 | `○` | yellow | cached (`-resume`) |
 | `X` | red | failed |
 
-## Develop
-
-```bash
-git clone https://github.com/damouzo/nf-subway.git
-cd nf-subway
-pip install -e ".[dev]"
-```
-
-│   └── cli.py           # Command-line interface
-├── examples/
-│   ├── demo.nf          # Demo pipeline
-│   └── setup_demo.sh    # Demo setup script
-├── test_subway.py       # Test suite
-├── pyproject.toml       # Package configuration
-└── README.md            # This file
-```
-
-
 ## License
 
 MIT License - see LICENSE file for details
