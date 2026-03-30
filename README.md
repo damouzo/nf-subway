@@ -2,7 +2,9 @@
 
 Terminal visualization for Nextflow pipelines, enabling easy interpretation of different processes across multiple subworkflows simultaneously.
 
+<video src="docs/video/nf-subway.mp4" autoplay loop muted playsinline></video>
 
+![nf-subway preview](docs/images/Image.png)
 
 ## Install
 
