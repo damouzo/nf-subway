@@ -23,7 +23,8 @@ class NextflowOutputParser:
     # Regex patterns for Nextflow output
     TASK_PREFIX_PATTERN = re.compile(r"^\[([a-f0-9]{2}/[a-f0-9]{6})\]\s+(.+)$")
     LEFT_PROCESS_PATTERN = re.compile(
-        r"^(?:(?:process)\s*>\s*)?(?P<name>.+?)(?:\s+\((?P<task_num>\d+)\))?\s*$",
+        r"^(?:process\s*>\s*)?(?P<name>[^\s\[\]()|]+)"
+        r"(?:\s+\((?P<task_num>\d+)\))?",
         re.IGNORECASE,
     )
     COUNT_PATTERN = re.compile(r"(\d+)\s+of\s+(\d+)", re.IGNORECASE)
@@ -138,7 +139,7 @@ class NextflowOutputParser:
                 task_num = left_match.group("task_num")
 
                 # Ignore non-process informational lines such as "executor > local (32)"
-                if process_name.lower().startswith("executor >"):
+                if process_name.lower() in ("executor", "monitor") or process_name.lower().startswith("executor"):
                     return None
 
                 progress_text, done, total = self._extract_progress(f"{right_part} {left_part}".strip())
@@ -156,6 +157,7 @@ class NextflowOutputParser:
                     "process": process_name,
                     "status": status,
                     "task_id": task_id,
+                    "task_num": task_num,
                     "progress": progress_text or "",
                     "duration": None,
                     "job_id": task_id,

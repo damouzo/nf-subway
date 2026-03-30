@@ -26,7 +26,9 @@ class ProcessNode:
     progress: Optional[str] = None
     annotation: Optional[str] = None  # Used for right-side info (job id, label, progress)
     branch_color: Optional[int] = None  # Index into the branch color palette
-    
+    workflow_prefix: Optional[str] = None  # Subworkflow name, or None for top-level processes
+    base_name: Optional[str] = None        # Base process name without instance number
+
     @property
     def is_terminal(self) -> bool:
         """Check if this is a terminal node (no children)."""
@@ -66,19 +68,29 @@ class SubwayGraph:
     
     def update_process(self, name: str, status: ProcessStatus,
                        duration: Optional[float] = None,
-                       annotation: Optional[str] = None):
+                       annotation: Optional[str] = None,
+                       workflow_prefix: Optional[str] = None,
+                       base_name: Optional[str] = None):
         """Update the status of an existing process."""
         if name in self.nodes:
-            self.nodes[name].status = status
+            node = self.nodes[name]
+            node.status = status
             if duration is not None:
-                self.nodes[name].duration = duration
+                node.duration = duration
             if annotation is not None:
-                self.nodes[name].annotation = annotation
+                node.annotation = annotation
+            if workflow_prefix is not None and node.workflow_prefix is None:
+                node.workflow_prefix = workflow_prefix
+                self.lanes_assigned = False
         else:
             # Process not yet seen, create it
             node = self.add_process(name, status)
             if annotation is not None:
                 node.annotation = annotation
+            if workflow_prefix is not None:
+                node.workflow_prefix = workflow_prefix
+            if base_name is not None:
+                node.base_name = base_name
     
     def add_dependency(self, parent: str, child: str):
         """Add a dependency relationship between two processes."""
@@ -101,108 +113,30 @@ class SubwayGraph:
     
     def assign_lanes(self):
         """
-        Assign horizontal lanes to processes using git-graph inspired algorithm.
-        
-        Key principles:
-        1. Processes in sequence stay in the same lane
-        2. Parallel processes get different lanes  
-        3. Lanes are reused when branches complete
-        4. Minimize lane switching
-        
-        This creates a more compact, readable visualization.
+        Assign lanes by workflow prefix.
+
+        - Main-branch (no subworkflow prefix) → lane 0
+        - Each distinct subworkflow prefix → its own unique lane
+
+        This mirrors git-graph's branch coloring: all commits on the same
+        branch share a lane and color.
         """
         if self.lanes_assigned:
             return
-        
-        # Reset all lanes
-        for node in self.nodes.values():
-            node.lane = 0
-        
-        # Track which lanes are currently "active" (have uncommitted work)
-        # Maps lane_id -> process_name occupying it
-        active_lanes: Dict[int, str] = {}
-        reserved_lanes: Dict[str, int] = {}  # child_name -> reserved lane number
-        
-        # Build reverse map: process -> its position in execution order
-        exec_positions = {name: idx for idx, name in enumerate(self.execution_order)}
-        
-        for process_name in self.execution_order:
-            node = self.nodes[process_name]
-            
-            # Check if this node has a pre-reserved lane from a parent split
-            if process_name in reserved_lanes:
-                node.lane = reserved_lanes[process_name]
-                active_lanes[node.lane] = process_name
-                del reserved_lanes[process_name]
-                
-            else:
-                # Get parent lanes
-                parent_lanes = [
-                    self.nodes[p].lane 
-                    for p in node.parents 
-                    if p in self.nodes
-                ]
-                
-                if not parent_lanes:
-                    # Root process: use lane 0 or first available
-                    if 0 not in active_lanes:
-                        node.lane = 0
-                        active_lanes[0] = process_name
-                    else:
-                        # Find first available lane
-                        lane = 0
-                        while lane in active_lanes:
-                            lane += 1
-                        node.lane = lane
-                        active_lanes[lane] = process_name
-                
-                elif len(parent_lanes) == 1:
-                    # Single parent: inherit its lane
-                    parent_lane = parent_lanes[0]
-                    node.lane = parent_lane
-                    active_lanes[parent_lane] = process_name
-                
-                else:
-                    # Multiple parents (merge): use the leftmost parent's lane
-                    node.lane = min(parent_lanes)
-                    active_lanes[node.lane] = process_name
-                    
-                    # Free up the other parent lanes if they're done
-                    for p_lane in parent_lanes:
-                        if p_lane != node.lane:
-                            # Check if this lane has any other active children
-                            parent_name = active_lanes.get(p_lane)
-                            if parent_name:
-                                parent_node = self.nodes.get(parent_name)
-                                if parent_node:
-                                    # Is this the last child of that lane?
-                                    is_last = all(
-                                        c == process_name or 
-                                        exec_positions.get(c, 999999) < exec_positions[process_name]
-                                        for c in parent_node.children
-                                    )
-                                    if is_last and p_lane in active_lanes:
-                                        del active_lanes[p_lane]
-            
-            # If this node has multiple children, reserve lanes for non-first children
-            if len(node.children) > 1:
-                # Sort children by execution order for consistency
-                sorted_children = sorted(node.children, key=lambda c: exec_positions.get(c, 999999))
-                
-                # First child will inherit this node's lane (handled above)
-                # Other children need new lanes
-                for i, child_name in enumerate(sorted_children):
-                    if i == 0:
-                        continue  # First child inherits lane normally
-                    
-                    if child_name in self.nodes:
-                        # Find a free lane for this child
-                        lane = 0
-                        used_lanes = set(active_lanes.keys()) | set(reserved_lanes.values())
-                        while lane in used_lanes:
-                            lane += 1
-                        reserved_lanes[child_name] = lane
-        
+
+        prefix_to_lane: Dict[str, int] = {"": 0}  # main branch always lane 0
+        next_lane = [1]
+
+        def get_lane(prefix: str) -> int:
+            if prefix not in prefix_to_lane:
+                prefix_to_lane[prefix] = next_lane[0]
+                next_lane[0] += 1
+            return prefix_to_lane[prefix]
+
+        for name in self.execution_order:
+            node = self.nodes[name]
+            node.lane = get_lane(node.workflow_prefix or "")
+
         self.lanes_assigned = True
     
     def get_ordered_processes(self) -> List[ProcessNode]:

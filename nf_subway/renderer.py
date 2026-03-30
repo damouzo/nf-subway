@@ -50,43 +50,166 @@ class SubwayRenderer:
             orientation = 'horizontal' if self.console.width > 120 and len(processes) < 15 else 'vertical'
         
         if orientation == 'horizontal':
-            # TODO: Implement horizontal layout with grid
-            # For now, fall back to simple horizontal rendering
-            return self._render_horizontal_simple(processes, max_lane)
+            # Horizontal layout with GridRenderer
+            return self._render_horizontal_grid(processes, max_lane)
         
         # Vertical layout with GridRenderer (git-graph style)
         return self._render_vertical_grid(processes, max_lane)
     
     def _render_vertical_grid(self, processes: List[ProcessNode], max_lane: int) -> List[Text]:
         """
-        Render vertical layout using grid system.
+        Render vertical layout (git-graph style).
+
+        Uses an active-lanes approach:
+        - Every lane draws │ continuously from its first to its last process
+        - Fork connectors (├──╮) appear when new subworkflow lanes open
+        - Merge connectors (╰──╯) appear when subworkflow lanes close
+        - No arrow characters — only box-drawing corners and T-junctions
+        """
+        from .grid import CharacterSet
+
+        chars = CharacterSet.round()
+        num_lanes = max_lane + 1
+        n = len(processes)
+        CW = 3  # column width: dot-char + 2 padding spaces
+
+        # First/last process index for each lane
+        lane_first = {}
+        lane_last = {}
+        for i, node in enumerate(processes):
+            if node.lane not in lane_first:
+                lane_first[node.lane] = i
+            lane_last[node.lane] = i
+
+        def lane_active(lane, row):
+            return lane_first.get(lane, n) <= row <= lane_last.get(lane, -1)
+
+        def dot_char(node):
+            if node.status == ProcessStatus.FAILED:
+                return "X"
+            if node.status == ProcessStatus.PENDING:
+                return chars.DOT_SECONDARY  # ○
+            return chars.DOT  # ●
+
+        def dot_color(node):
+            base = self.colors.branch_color(node.lane)
+            if node.status == ProcessStatus.FAILED:
+                return "bright_red bold"
+            if node.status == ProcessStatus.RUNNING:
+                return f"{base} bold" if self.blink.should_show_bright() else f"dim {base}"
+            if node.status == ProcessStatus.PENDING:
+                return "dim white"
+            return base
+
+        max_ann = max(20, self.console.width - num_lanes * CW - 2)
+        result = []
+
+        for i, node in enumerate(processes):
+            # --- Process row ---
+            line = Text()
+            for lane in range(num_lanes):
+                if lane == node.lane:
+                    line.append(dot_char(node), style=dot_color(node))
+                elif lane_active(lane, i):
+                    line.append(chars.VERTICAL, style=self.colors.branch_color(lane))
+                else:
+                    line.append(" ")
+                line.append("  ")  # 2-char padding → total COLUMN_WIDTH = 3
+
+            ann = self._format_annotation(node)
+            if len(ann) > max_ann:
+                ann = ann[: max_ann - 1] + "…"
+            line.append(ann, style=self._get_style(node))
+            result.append(line)
+
+            if i >= n - 1:
+                continue
+
+            # --- Connector row between process i and i+1 ---
+            above = {l for l in range(num_lanes) if lane_active(l, i)}
+            below = {l for l in range(num_lanes) if lane_active(l, i + 1)}
+            passing = above & below
+            new_lanes = sorted(below - above)
+            dying = sorted(above - below)
+
+            cs = [" "] * (num_lanes * CW)
+            co = [None] * (num_lanes * CW)
+
+            def sx(x, ch, cl):
+                cs[x] = ch
+                co[x] = cl
+
+            # 1. Continuing lanes → │
+            for lane in passing:
+                sx(lane * CW, chars.VERTICAL, self.colors.branch_color(lane))
+
+            # 2. Dying lanes (right-to-left so leftmost corner wins)
+            for d in reversed(dying):
+                color = self.colors.branch_color(d)
+                d_x = d * CW
+                sx(d_x, chars.CORNER_LU, color)  # ╯
+                tgt_cands = [l for l in passing if l < d]
+                tgt = min(tgt_cands) if tgt_cands else (min(below) if below else 0)
+                tgt_color = self.colors.branch_color(tgt)
+                tgt_x = tgt * CW
+                for x in range(tgt_x + 1, d_x):
+                    if cs[x] == " ":
+                        sx(x, chars.HORIZONTAL, color)
+                if cs[tgt_x] == chars.VERTICAL:
+                    sx(tgt_x, chars.SPLIT_RIGHT, tgt_color)  # ├
+
+            # 3. New lanes — fork from nearest passing lane to the left
+            for new_l in new_lanes:
+                color = self.colors.branch_color(new_l)
+                new_x = new_l * CW
+                src_cands = [l for l in passing if l < new_l]
+                src = min(src_cands) if src_cands else (min(above) if above else 0)
+                src_color = self.colors.branch_color(src)
+                src_x = src * CW
+                if cs[src_x] == chars.VERTICAL:
+                    sx(src_x, chars.SPLIT_RIGHT, src_color)  # ├
+                elif cs[src_x] == " ":
+                    sx(src_x, chars.CORNER_RU, src_color)    # ╭
+                for x in range(src_x + 1, new_x):
+                    if cs[x] == " ":
+                        sx(x, chars.HORIZONTAL, color)
+                sx(new_x, chars.CORNER_LD, color)  # ╮
+
+            conn = Text()
+            for ch, cl in zip(cs, co):
+                conn.append(ch, style=cl) if cl else conn.append(ch)
+            result.append(conn)
+
+        return result
+    
+    def _render_horizontal_grid(self, processes: List[ProcessNode], max_lane: int) -> List[Text]:
+        """
+        Render horizontal layout using grid system (git-graph style).
         
-        This creates a git-graph style visualization with:
-        - Consistent 4-character column width
-        - Box-drawing characters for connections
-        - Color-coded lanes
+        In horizontal mode:
+        - Each lane is a row (top to bottom)
+        - Processes flow left to right
+        - Annotations appear at the end of each row
         """
         from .grid import GridRenderer, CharacterSet
         
         # Calculate grid dimensions
-        # Each process gets 1 row for the dot, plus connection rows between
-        num_rows = len(processes) * 2 - 1  # dot rows + connector rows
-        num_cols = max_lane + 1
+        # Each process gets 1 column, plus connector columns between
+        num_cols = len(processes) * 2 - 1
+        num_rows = max_lane + 1
         
         grid = GridRenderer(num_cols, num_rows)
         chars = CharacterSet.round()
         
-        # Build a mapping of process names to their row indices
-        process_rows = {}
-        lane_rows = {}
+        # Build mapping of process names to column indices
+        process_cols = {}
         for idx, node in enumerate(processes):
-            row = idx * 2
-            process_rows[node.name] = row
-            lane_rows.setdefault(node.lane, []).append(row)
+            col = idx * 2
+            process_cols[node.name] = col
         
         # Draw each process
         for idx, node in enumerate(processes):
-            row = idx * 2
+            col = idx * 2
             
             # Determine dot character and color
             dot_color = self._lane_color(node)
@@ -106,150 +229,70 @@ class SubwayRenderer:
                 dot_color = 'dim white'
             
             # Draw the dot
-            grid.set_char(row, node.lane, dot_char, dot_color)
+            grid.set_char(node.lane, col, dot_char, dot_color)
             
-            # Get parent and child lanes
-            parent_lanes = [
-                self.graph.nodes[p].lane 
-                for p in node.parents 
-                if p in self.graph.nodes
-            ]
-            child_lanes = [
-                self.graph.nodes[c].lane 
-                for c in node.children 
-                if c in self.graph.nodes
-            ]
-            
-            # Draw connections from parents (if not first process)
-            if idx > 0:
-                connector_row = row - 1
-                
-                if len(parent_lanes) > 1:
-                    # Merge from multiple parents
-                    grid.draw_merge(connector_row, parent_lanes, node.lane, dot_color)
-                elif len(parent_lanes) == 1:
-                    parent_lane = parent_lanes[0]
-                    if parent_lane == node.lane:
-                        # Simple vertical continuation
-                        grid.set_char(connector_row, node.lane, chars.VERTICAL, dot_color)
-                    else:
-                        # Lane change - draw corner
-                        if parent_lane < node.lane:
-                            grid.set_char(connector_row, parent_lane, chars.CORNER_LD, dot_color)
-                            grid.draw_horizontal_line(connector_row, parent_lane, node.lane, dot_color)
-                            grid.set_char(connector_row, node.lane, chars.ARROW_RIGHT, dot_color)
-                        else:
-                            grid.set_char(connector_row, node.lane, chars.ARROW_LEFT, dot_color)
-                            grid.draw_horizontal_line(connector_row, node.lane, parent_lane, dot_color)
-                            grid.set_char(connector_row, parent_lane, chars.CORNER_LU, dot_color)
-            
-            # Draw connections to children (if not last process)
+            # Draw horizontal connections
             if idx < len(processes) - 1:
-                connector_row = row + 1
+                connector_col = col + 1
                 
-                if len(child_lanes) > 1:
-                    # Split to multiple children
-                    grid.draw_split(connector_row, node.lane, child_lanes, dot_color)
-                elif len(child_lanes) == 1:
-                    child_lane = child_lanes[0]
-                    if child_lane == node.lane:
-                        # Simple vertical continuation
-                        grid.set_char(connector_row, node.lane, chars.VERTICAL, dot_color)
-                    # Lane changes will be drawn by the child process
-
-        # Draw continuous vertical lane strokes between nodes in the same lane
-        # to avoid broken/discontinuous branch appearance.
-        for lane, rows in lane_rows.items():
-            ordered_rows = sorted(set(rows))
-            if len(ordered_rows) < 2:
-                continue
-            lane_color = self.colors.branch_color(lane)
-            for row_start, row_end in zip(ordered_rows, ordered_rows[1:]):
-                grid.draw_vertical_line(row_start, row_end, lane, lane_color)
+                # Get children info for connections
+                child_lanes = [
+                    self.graph.nodes[c].lane 
+                    for c in node.children 
+                    if c in self.graph.nodes
+                ]
+                
+                if len(child_lanes) == 1 and child_lanes[0] == node.lane:
+                    # Simple horizontal continuation
+                    grid.set_char(node.lane, connector_col, chars.HORIZONTAL, dot_color)
+                elif len(child_lanes) > 0:
+                    # Lane changes - draw appropriately
+                    for child_lane in child_lanes:
+                        if child_lane == node.lane:
+                            grid.set_char(node.lane, connector_col, chars.HORIZONTAL, dot_color)
+                        else:
+                            # Vertical connection needed
+                            min_lane = min(node.lane, child_lane)
+                            max_lane = max(node.lane, child_lane)
+                            for row in range(min_lane, max_lane + 1):
+                                if row == node.lane:
+                                    grid.set_char(row, connector_col, chars.SPLIT_RIGHT if node.lane < child_lane else chars.SPLIT_LEFT, dot_color)
+                                elif row == child_lane:
+                                    grid.set_char(row, connector_col, chars.ARROW_RIGHT if node.lane < child_lane else chars.ARROW_LEFT, dot_color)
+                                else:
+                                    grid.set_char(row, connector_col, chars.VERTICAL, dot_color)
         
-        # Build result with annotations
+        # Build result lines with annotations
         result = []
-        max_ann_width = self.console.width - (grid.COLUMN_WIDTH * num_cols) - 3
-        if max_ann_width < 20:
-            max_ann_width = 20
-        
-        for idx, node in enumerate(processes):
-            row = idx * 2
-            
-            # Build the grid line for this row
+        for lane in range(num_rows):
             line = Text()
+            
+            # Build the grid line for this lane
             for col in range(num_cols):
-                cell = grid.get_char(row, col)
                 x = grid._col_to_x(col)
-                
-                # Add all characters for this column (width = COLUMN_WIDTH)
                 for offset in range(grid.COLUMN_WIDTH):
-                    grid_cell = grid.grid[row][x + offset]
+                    grid_cell = grid.grid[lane][x + offset]
                     if grid_cell.color:
                         line.append(grid_cell.char, style=grid_cell.color)
                     else:
                         line.append(grid_cell.char)
             
-            # Add annotation
-            annotation = self._format_annotation(node)
-            if len(annotation) > max_ann_width:
-                annotation = annotation[:max_ann_width-3] + "..."
-            
-            line.append(" ")
-            line.append(annotation, style=self._get_style(node))
+            # Add annotation for this lane showing which processes are in it
+            lane_processes = [p for p in processes if p.lane == lane]
+            if lane_processes:
+                annotations = []
+                for p in lane_processes:
+                    ann = self._format_annotation(p)
+                    if len(ann) > 30:
+                        ann = ann[:27] + "..."
+                    annotations.append(ann)
+                
+                line.append("  ")
+                line.append(" → ".join(annotations), style="dim")
             
             result.append(line)
-            
-            # Add connector line if exists
-            if idx < len(processes) - 1:
-                connector_row = row + 1
-                connector_line = Text()
-                for col in range(num_cols):
-                    x = grid._col_to_x(col)
-                    for offset in range(grid.COLUMN_WIDTH):
-                        grid_cell = grid.grid[connector_row][x + offset]
-                        if grid_cell.color:
-                            connector_line.append(grid_cell.char, style=grid_cell.color)
-                        else:
-                            connector_line.append(grid_cell.char)
-                result.append(connector_line)
         
         return result
-    
-    def _render_horizontal_simple(self, processes: List[ProcessNode], max_lane: int) -> List[Text]:
-        """Simple horizontal rendering (fallback)."""
-        lines = []
-        sep = " "
-        
-        # Horizontal: each lane is a row, dots left→right
-        for lane in range(max_lane + 1):
-            line = Text()
-            for node in processes:
-                if node.lane == lane:
-                    dot_style = self._lane_color(node)
-                    if node.status == ProcessStatus.RUNNING:
-                        dot_style = self.blink.get_running_style()
-                    line.append("●", style=dot_style)
-                else:
-                    # Check if lane is active at this position
-                    parent_lanes = [
-                        self.graph.nodes[p].lane 
-                        for p in node.parents 
-                        if p in self.graph.nodes
-                    ]
-                    child_lanes = [
-                        self.graph.nodes[c].lane 
-                        for c in node.children 
-                        if c in self.graph.nodes
-                    ]
-                    if lane in parent_lanes or lane in child_lanes:
-                        line.append("─", style=self.colors.branch_color(lane))
-                    else:
-                        line.append(" ")
-                line.append(sep)
-            lines.append(line)
-        
-        return lines
 
     def _lane_color(self, node: ProcessNode) -> str:
         """
@@ -281,17 +324,16 @@ class SubwayRenderer:
         return ""
     
     def _get_style(self, node: ProcessNode) -> str:
-        """Get text style for process annotation."""
-        if node.status == ProcessStatus.COMPLETED:
-            return "dim green"
-        elif node.status == ProcessStatus.FAILED:
-            return "bright_red"
-        elif node.status == ProcessStatus.RUNNING:
-            return "bright_blue"
-        elif node.status == ProcessStatus.CACHED:
-            return "cyan"
-        else:
+        """Annotation text style: use lane color to match git-graph aesthetics."""
+        if node.status == ProcessStatus.FAILED:
+            return "bright_red bold"
+        if node.status == ProcessStatus.RUNNING:
+            return f"{self.colors.branch_color(node.lane)} bold"
+        if node.status == ProcessStatus.PENDING:
             return "dim"
+        if node.status == ProcessStatus.CACHED:
+            return f"dim {self.colors.branch_color(node.lane)}"
+        return self.colors.branch_color(node.lane)  # COMPLETED
     
     def _format_annotation(self, node: ProcessNode) -> str:
         """Format the annotation text for a process."""
@@ -377,17 +419,6 @@ class SubwayRenderer:
             # This will be updated by the main loop
             return live
     
-    def _get_icon(self, node: ProcessNode) -> str:
-        """Get the icon for a process based on its status."""
-        return self.colors.get_icon(node.status)
-    
-    def _get_style(self, node: ProcessNode) -> str:
-        """Get the Rich style for a process based on its status."""
-        if node.status == ProcessStatus.RUNNING:
-            # Use blinking effect for running processes
-            return self.blink.get_running_style()
-        return self.colors.get_process_style(node.status)
-    
     def _format_title(self, stats: dict) -> str:
         """Format the title with stats."""
         total = stats['total']
@@ -405,21 +436,6 @@ class SubwayRenderer:
             parts.append(f"{failed} failed")
         
         return " | ".join(parts)
-    
-    def _format_duration(self, seconds: float) -> str:
-        """Format duration in human-readable format."""
-        if seconds < 1:
-            return f"{int(seconds * 1000)}ms"
-        elif seconds < 60:
-            return f"{seconds:.1f}s"
-        elif seconds < 3600:
-            minutes = int(seconds // 60)
-            secs = int(seconds % 60)
-            return f"{minutes}m {secs}s"
-        else:
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            return f"{hours}h {minutes}m"
     
     def tick_animation(self):
         """Advance the animation by one frame (for blinking effect)."""

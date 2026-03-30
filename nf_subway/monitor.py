@@ -50,12 +50,15 @@ class NextflowMonitor:
         
         # Thread-safe queue for output lines
         self.output_queue = Queue()
-        
-        # Track previous process for simple dependency inference
+
+        # task_id -> node_key: lets status updates find the right graph node
+        self._task_id_to_node_key: dict = {}
+
+        # Dependency inference state
         self.last_process = None
-        self.last_top_level_process = None
-        self.workflow_last_processes = {}
-        self.open_workflow_tails = {}
+        self.last_top_level: Optional[str] = None   # node_key of last main-branch node
+        self._last_in_workflow: dict = {}            # norm_prefix -> node_key
+        self._open_workflow_tails: dict = {}        # norm_prefix -> node_key
     
     def start(self):
         """Start monitoring the input stream."""
@@ -143,43 +146,54 @@ class NextflowMonitor:
     def _process_line(self, line: str):
         """Process a single line of output. Returns True if pipeline completed."""
         parsed = self.parser.parse_and_update(line)
-        
+
         if not parsed:
-            # Check for pipeline completion in raw line
             if 'Pipeline completed' in line or 'Execution status: OK' in line:
                 self._mark_workflow_complete()
-                return True  # Signal completion
+                return True
             return False
-        
-        # Handle workflow completion event
+
         if parsed.get('event') == 'workflow_complete':
             self._mark_workflow_complete()
-            return True  # Signal completion
-        
-        # Extract process information
+            return True
+
         process_name = parsed.get('process')
         status = parsed.get('status')
         task_id = parsed.get('task_id')
+        task_num = parsed.get('task_num')
         duration = parsed.get('duration')
         annotation = parsed.get('annotation')
-        
-        if process_name and status:
-            is_new_process = process_name not in self.graph.nodes
 
-            # Update or add the process
-            self.graph.update_process(
-                process_name,
-                status,
-                duration=duration,
-                annotation=annotation
-            )
-            
-            if is_new_process:
-                self._infer_dependency(process_name)
-            
-            # Update last seen process
-            self.last_process = process_name
-        
+        if not process_name or not status:
+            return False
+
+        # Resolve stable node key for this task instance
+        if task_id and task_id in self._task_id_to_node_key:
+            node_key = self._task_id_to_node_key[task_id]
+        else:
+            node_key = f"{process_name} ({task_num})" if task_num else process_name
+            if task_id:
+                self._task_id_to_node_key[task_id] = node_key
+
+        workflow_prefix = process_name.split(":", 1)[0] if ":" in process_name else None
+        if workflow_prefix:
+            workflow_prefix = self._normalize_workflow_key(workflow_prefix)
+
+        is_new = node_key not in self.graph.nodes
+
+        self.graph.update_process(
+            node_key,
+            status,
+            duration=duration,
+            annotation=annotation,
+            workflow_prefix=workflow_prefix,
+            base_name=process_name,
+        )
+
+        if is_new:
+            self._infer_dependency(node_key, process_name)
+
+        self.last_process = node_key
         return False
 
     def _mark_workflow_complete(self):
@@ -188,56 +202,53 @@ class NextflowMonitor:
             if process.status in {ProcessStatus.RUNNING, ProcessStatus.PENDING}:
                 self.graph.update_process(process.name, ProcessStatus.COMPLETED)
 
-    def _infer_dependency(self, process_name: str):
-        """Infer likely dependencies to produce a readable git-graph style layout."""
+    def _infer_dependency(self, node_key: str, process_name: str):
+        """Infer likely parent dependency for a newly added node."""
         if ":" in process_name:
             workflow_name = process_name.split(":", 1)[0]
             workflow_key = self._normalize_workflow_key(workflow_name)
-            previous_in_workflow = self.workflow_last_processes.get(workflow_name)
 
-            if previous_in_workflow is None:
-                previous_in_workflow = self.workflow_last_processes.get(workflow_key)
+            prev = self._last_in_workflow.get(workflow_name) or self._last_in_workflow.get(workflow_key)
 
-            if previous_in_workflow and previous_in_workflow != process_name:
-                self.graph.add_dependency(previous_in_workflow, process_name)
-            elif self.last_top_level_process and self.last_top_level_process != process_name:
-                self.graph.add_dependency(self.last_top_level_process, process_name)
+            if prev and prev != node_key:
+                self.graph.add_dependency(prev, node_key)
+            elif self.last_top_level and self.last_top_level != node_key:
+                self.graph.add_dependency(self.last_top_level, node_key)
 
-            self.workflow_last_processes[workflow_name] = process_name
-            self.workflow_last_processes[workflow_key] = process_name
-            self.open_workflow_tails[workflow_key] = process_name
+            self._last_in_workflow[workflow_name] = node_key
+            self._last_in_workflow[workflow_key] = node_key
+            self._open_workflow_tails[workflow_key] = node_key
             return
 
-        # Top-level process (without subworkflow prefix)
-        if self.open_workflow_tails:
-            for tail_name in sorted(set(self.open_workflow_tails.values())):
-                if tail_name != process_name:
-                    self.graph.add_dependency(tail_name, process_name)
-            self.open_workflow_tails.clear()
-        elif self.last_top_level_process and self.last_top_level_process != process_name:
-            self.graph.add_dependency(self.last_top_level_process, process_name)
+        # Top-level process: merge from all open workflow tails
+        if self._open_workflow_tails:
+            for tail in sorted(set(self._open_workflow_tails.values())):
+                if tail != node_key:
+                    self.graph.add_dependency(tail, node_key)
+            self._open_workflow_tails.clear()
+        elif self.last_top_level and self.last_top_level != node_key:
+            self.graph.add_dependency(self.last_top_level, node_key)
 
-        self.last_top_level_process = process_name
+        self.last_top_level = node_key
 
     @staticmethod
     def _normalize_workflow_key(workflow_name: str) -> str:
         """
-        Normalize subworkflow prefixes when Nextflow truncates them with ellipsis.
+        Canonical key for a workflow name, robust to Nextflow's variable middle-truncation.
 
-        Example:
-            ALI…ASED_QUANTIFICATION
-            ALI…D_QUANTIFICATION
-            ALI…QUANTIFICATION
-        become a stable key based on leading token + suffix.
+        Nextflow truncates long subworkflow prefixes to fit its display column, preserving
+        a few chars from the start and end. The amount preserved from the end varies per
+        process, so we key only on the stable prefix before the ellipsis.
+
+        Examples:
+            ALI…QUANTIFICATION:ALIGN_READS  → key "ali"
+            ALI…NTIFICATION:COUNT_FEATURES  → key "ali"  (same workflow)
+            ALIGNMENT_BASED_QUANTIFICATION  → key "alignment_based_quantification"
         """
-        normalized = workflow_name.strip().lower()
-        if "…" not in normalized:
-            return normalized
-
-        left, right = normalized.split("…", 1)
-        left_token = left[:3]
-        right_token = right[-20:]
-        return f"{left_token}:{right_token}"
+        name = workflow_name.strip().lower()
+        if "…" in name:
+            return name.split("…")[0]
+        return name
 
 
 class FileMonitor(NextflowMonitor):
