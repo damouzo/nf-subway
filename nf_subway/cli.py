@@ -53,9 +53,9 @@ Examples:
     )
     
     parser.add_argument(
-        '--no-original',
+        '--original',
         action='store_true',
-        help='Hide original Nextflow output (only show subway graph)'
+        help='Show original Nextflow output alongside the subway graph'
     )
     
     parser.add_argument(
@@ -63,7 +63,7 @@ Examples:
         type=str,
         choices=['vertical', 'horizontal', 'auto'],
         default='auto',
-        help='Pipeline layout orientation: vertical, horizontal, or auto (default: auto)'
+        help='Pipeline layout orientation — vertical or auto (horizontal is an alias for vertical)'
     )
 
     args = parser.parse_args()
@@ -80,7 +80,7 @@ Examples:
             args.log,
             orientation=args.orientation,
             refresh_rate=args.refresh,
-            show_original=not args.no_original,
+            show_original=args.original,
         )
     else:
         # stdin pipe mode (default)
@@ -94,7 +94,7 @@ Examples:
         monitor_nextflow_stdout(
             orientation=args.orientation,
             refresh_rate=args.refresh,
-            show_original=not args.no_original,
+            show_original=args.original,
         )
 
 

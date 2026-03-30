@@ -4,7 +4,13 @@ logs/
 *.log
 __pycache__/
 *.pyc
+*.pyo
 .venv/
+.env/
+dist/
+build/
+*.egg-info/
+AGENTS.md
 examples/work/*
 examples/results/*
-AGENTS.md
+/tmp/

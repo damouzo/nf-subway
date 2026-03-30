@@ -94,7 +94,7 @@ class BlinkEffect:
     
     def __init__(self):
         self.frame = 0
-        self.frames_per_blink = 3  # Number of frames before toggle
+        self.frames_per_blink = 2  # Number of frames before toggle
     
     def tick(self):
         """Advance the animation by one frame."""

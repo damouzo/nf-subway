@@ -76,6 +76,8 @@ class NextflowMonitor:
         try:
             self._update_loop()
         except KeyboardInterrupt:
+            pass
+        finally:
             self.stop()
     
     def stop(self):
@@ -134,9 +136,12 @@ class NextflowMonitor:
                     self.renderer.update()
                 last_update = current_time
             
-            # If pipeline completed and no more input, exit gracefully
+            # If pipeline completed and no more input, render final bright
+            # frame then exit — do NOT sleep here (blocks the render loop).
             if pipeline_complete and self.output_queue.empty():
-                time.sleep(1)  # Final update display
+                self._mark_workflow_complete()
+                if self.renderer:
+                    self.renderer.render_final()
                 self.is_running = False
                 break
             
@@ -167,11 +172,14 @@ class NextflowMonitor:
         if not process_name or not status:
             return False
 
-        # Resolve stable node key for this task instance
+        # One graph node per process name — never per task instance.
+        # Nextflow's "N of M" counts are already aggregated across all parallel
+        # instances, so using process_name as the key gives us the same
+        # single-row-per-process behaviour as Nextflow's own live display.
         if task_id and task_id in self._task_id_to_node_key:
             node_key = self._task_id_to_node_key[task_id]
         else:
-            node_key = f"{process_name} ({task_num})" if task_num else process_name
+            node_key = process_name  # always collapse instances into one node
             if task_id:
                 self._task_id_to_node_key[task_id] = node_key
 

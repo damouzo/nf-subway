@@ -78,8 +78,8 @@ class NextflowOutputParser:
         if done is not None and total is not None:
             if total > 0 and done >= total:
                 return ProcessStatus.COMPLETED
-            if done <= 0:
-                return ProcessStatus.PENDING
+            # Any task line Nextflow emits (even 0 of N) means the process
+            # has been submitted — treat as RUNNING, not PENDING.
             return ProcessStatus.RUNNING
 
         return ProcessStatus.RUNNING
@@ -121,12 +121,20 @@ class NextflowOutputParser:
             # Cached format in task lines
             cached_match = self.CACHED_PATTERN.match(left_part)
             if cached_match:
-                process_name = cached_match.group(1).strip()
-                annotation = f"[{task_id}] {process_name} | CACHED"
+                raw_name = cached_match.group(1).strip()
+                # Extract optional (task_num) from the name
+                name_match = self.LEFT_PROCESS_PATTERN.match(raw_name)
+                process_name = name_match.group("name").strip() if name_match else raw_name
+                task_num_c = name_match.group("task_num") if name_match else None
+                annotation = f"[{task_id}] {process_name}"
+                if task_num_c:
+                    annotation += f" ({task_num_c})"
+                annotation += " | CACHED"
                 return {
                     "process": process_name,
                     "status": ProcessStatus.CACHED,
                     "task_id": task_id,
+                    "task_num": task_num_c,
                     "progress": "CACHED",
                     "duration": 0.0,
                     "job_id": task_id,

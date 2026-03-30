@@ -32,50 +32,46 @@ class SubwayRenderer:
         self.blink = BlinkEffect()
         self.colors = GitGraphColors()
     
-    def render_to_lines(self, orientation='vertical') -> List[Text]:
+    def render_to_lines(self, max_rows: int = 0) -> List[Text]:
         """
-        Render the graph using grid-based layout (git-graph style).
-        Supports vertical (default), horizontal, and auto.
+        Render the graph (vertical, git-graph style).
+        If max_rows > 0, only the last rows are returned (sliding window — prevents
+        Rich Live clipping when the pipeline is larger than the terminal height).
         """
-        from .grid import GridRenderer, CharacterSet
-        
         processes = self.graph.get_ordered_processes()
         if not processes:
             return [Text("No processes yet...", style="dim")]
 
         self.graph.assign_lanes()
         max_lane = max((node.lane for node in processes), default=0)
-        
-        if orientation == 'auto':
-            orientation = 'horizontal' if self.console.width > 120 and len(processes) < 15 else 'vertical'
-        
-        if orientation == 'horizontal':
-            # Horizontal layout with GridRenderer
-            return self._render_horizontal_grid(processes, max_lane)
-        
-        # Vertical layout with GridRenderer (git-graph style)
-        return self._render_vertical_grid(processes, max_lane)
+        lines = self._render_vertical_grid(processes, max_lane)
+
+        if max_rows > 0 and len(lines) > max_rows:
+            lines = lines[-max_rows:]
+        return lines
     
     def _render_vertical_grid(self, processes: List[ProcessNode], max_lane: int) -> List[Text]:
         """
         Render vertical layout (git-graph style).
 
-        Uses an active-lanes approach:
-        - Every lane draws │ continuously from its first to its last process
-        - Fork connectors (├──╮) appear when new subworkflow lanes open
-        - Merge connectors (╰──╯) appear when subworkflow lanes close
-        - No arrow characters — only box-drawing corners and T-junctions
+        Connector-row rules:
+        - Between every pair of consecutive processes, exactly ONE connector row
+          is emitted — showing │ for each active lane plus fork/merge characters
+          when the branch topology changes.
+        - EXCEPTION: when a new lane opens as the very first branch (only ONE
+          lane was active before), the fork is shown INLINE in the new process's
+          dot row (├──●) and the preceding connector row is skipped.  This keeps
+          the first branch opening compact while still connecting all other dots.
         """
         from .grid import CharacterSet
 
         chars = CharacterSet.round()
         num_lanes = max_lane + 1
         n = len(processes)
-        CW = 3  # column width: dot-char + 2 padding spaces
+        CW = 3
 
-        # First/last process index for each lane
-        lane_first = {}
-        lane_last = {}
+        lane_first: dict = {}
+        lane_last: dict = {}
         for i, node in enumerate(processes):
             if node.lane not in lane_first:
                 lane_first[node.lane] = i
@@ -84,14 +80,14 @@ class SubwayRenderer:
         def lane_active(lane, row):
             return lane_first.get(lane, n) <= row <= lane_last.get(lane, -1)
 
-        def dot_char(node):
+        def dot_ch(node):
             if node.status == ProcessStatus.FAILED:
                 return "X"
-            if node.status == ProcessStatus.PENDING:
-                return chars.DOT_SECONDARY  # ○
-            return chars.DOT  # ●
+            if node.status in (ProcessStatus.PENDING, ProcessStatus.CACHED):
+                return chars.DOT_SECONDARY
+            return chars.DOT
 
-        def dot_color(node):
+        def dot_cl(node):
             base = self.colors.branch_color(node.lane)
             if node.status == ProcessStatus.FAILED:
                 return "bright_red bold"
@@ -99,24 +95,111 @@ class SubwayRenderer:
                 return f"{base} bold" if self.blink.should_show_bright() else f"dim {base}"
             if node.status == ProcessStatus.PENDING:
                 return "dim white"
+            if node.status == ProcessStatus.CACHED:
+                return "yellow"
             return base
 
+        # Inline-fork map: process_idx -> source_lane
+        # Condition: exactly ONE new lane, at least one lane to the left to
+        # act as source — fold the fork ├── directly into the dot row.
+        # Two sub-cases:
+        #   a) Normal: source lane is still active (passing) — no dying lanes
+        #   b) Transient: source lane ends AT THIS STEP (dying) — e.g. last
+        #      top-level process ends while first subworkflow starts.  Without
+        #      this case a bare ╯──╮ connector row appears during live render.
+        inline_fork: dict = {}
+        for i, node in enumerate(processes):
+            if i == 0 or i != lane_first.get(node.lane, -1):
+                continue
+            above = frozenset(l for l in range(num_lanes) if lane_active(l, i - 1))
+            below = frozenset(l for l in range(num_lanes) if lane_active(l, i))
+            new_here = below - above
+            dying_here = above - below
+            passing_here = above & below
+            if len(new_here) == 1 and not dying_here:
+                # (a) source is passing
+                src_cands = [l for l in passing_here if l < node.lane]
+                if src_cands:
+                    inline_fork[i] = min(src_cands)
+            elif len(new_here) == 1 and not passing_here:
+                # (b) source is dying — all previous lanes end here
+                src_cands = [l for l in dying_here if l < node.lane]
+                if src_cands:
+                    inline_fork[i] = min(src_cands)
+
+        # Inline-merge map: process_idx -> target_lane
+        # Mirrors inline_fork: the LAST dot on a side lane shows ┤──...──●
+        # (pointing back leftward to the main lane) instead of a stray ╯ suffix.
+        inline_merge: dict = {}
+        for i, node in enumerate(processes):
+            if node.lane == 0 or i != lane_last.get(node.lane, -1) or i == n - 1:
+                continue
+            tgt_cands = [l for l in range(num_lanes) if lane_active(l, i) and l < node.lane]
+            if tgt_cands:
+                inline_merge[i] = min(tgt_cands)
+
         max_ann = max(20, self.console.width - num_lanes * CW - 2)
+
+        # Pre-compute name_width: the width of the longest "[id] NAME" prefix
+        # across all annotations that contain a " | " separator.  This makes
+        # the progress column (N of M ✔) align vertically like Nextflow's display.
+        name_width = 0
+        for node in processes:
+            ann = node.annotation or node.name
+            if " | " in ann:
+                left = ann.split(" | ", 1)[0]
+                if len(left) > name_width:
+                    name_width = len(left)
+
         result = []
 
         for i, node in enumerate(processes):
-            # --- Process row ---
+            # ── Process (dot) row ──────────────────────────────────────────
+            src = inline_fork.get(i)   # fork: render ├──...──● inline
+            mrg = inline_merge.get(i)  # merge: render ┤──...──● inline
             line = Text()
             for lane in range(num_lanes):
-                if lane == node.lane:
-                    line.append(dot_char(node), style=dot_color(node))
-                elif lane_active(lane, i):
+                is_active = lane_active(lane, i)
+                if src is not None and src <= lane <= node.lane:
+                    # ── inline fork zone ──────────────────────────────────
+                    if lane == node.lane:
+                        line.append(dot_ch(node), style=dot_cl(node))
+                        line.append("  ")
+                    elif lane == src:
+                        line.append("├", style=self.colors.branch_color(src))
+                        line.append("──", style=self.colors.branch_color(node.lane))
+                    else:
+                        cross = "┼" if is_active else "─"
+                        col = self.colors.branch_color(lane) if is_active else self.colors.branch_color(node.lane)
+                        line.append(cross, style=col)
+                        line.append("──", style=self.colors.branch_color(node.lane))
+                elif mrg is not None and mrg <= lane <= node.lane:
+                    # ── inline merge zone ─────────────────────────────────
+                    # Dashed line (╌╌) in the closing branch color signals
+                    # "this branch is returning to main". Perfectly centered
+                    # because ╌ is a pure box-drawing character.
+                    branch_col = self.colors.branch_color(node.lane)
+                    if lane == node.lane:
+                        line.append(dot_ch(node), style=dot_cl(node))
+                        line.append("  ")
+                    elif lane == mrg:
+                        line.append(chars.VERTICAL, style=self.colors.branch_color(mrg))
+                        line.append("──", style=branch_col)
+                    else:
+                        cross = "┼" if is_active else "─"
+                        col = self.colors.branch_color(lane) if is_active else branch_col
+                        line.append(cross, style=col)
+                        line.append("──", style=branch_col)
+                elif lane == node.lane:
+                    line.append(dot_ch(node), style=dot_cl(node))
+                    line.append("  ")
+                elif is_active:
                     line.append(chars.VERTICAL, style=self.colors.branch_color(lane))
+                    line.append("  ")
                 else:
-                    line.append(" ")
-                line.append("  ")  # 2-char padding → total COLUMN_WIDTH = 3
+                    line.append("   ")
 
-            ann = self._format_annotation(node)
+            ann = self._format_annotation(node, name_width=name_width)
             if len(ann) > max_ann:
                 ann = ann[: max_ann - 1] + "…"
             line.append(ann, style=self._get_style(node))
@@ -125,25 +208,35 @@ class SubwayRenderer:
             if i >= n - 1:
                 continue
 
-            # --- Connector row between process i and i+1 ---
+            # ── Connector row ──────────────────────────────────────────────
+            # Skip when the next process will show an inline fork —
+            # the ├── in that dot row is the visual connector.
+            if i + 1 in inline_fork:
+                continue
+
             above = {l for l in range(num_lanes) if lane_active(l, i)}
             below = {l for l in range(num_lanes) if lane_active(l, i + 1)}
             passing = above & below
             new_lanes = sorted(below - above)
             dying = sorted(above - below)
 
+            # Only emit connector rows when new lanes open.
+            # Merges are implicit: side lanes simply stop appearing after their last process.
+            if not new_lanes:
+                continue
+
             cs = [" "] * (num_lanes * CW)
-            co = [None] * (num_lanes * CW)
+            co: list = [None] * (num_lanes * CW)
 
             def sx(x, ch, cl):
                 cs[x] = ch
                 co[x] = cl
 
-            # 1. Continuing lanes → │
+            # Continuing lanes → │
             for lane in passing:
                 sx(lane * CW, chars.VERTICAL, self.colors.branch_color(lane))
 
-            # 2. Dying lanes (right-to-left so leftmost corner wins)
+            # Dying lanes (merge back) — right-to-left so leftmost corner wins
             for d in reversed(dying):
                 color = self.colors.branch_color(d)
                 d_x = d * CW
@@ -158,14 +251,14 @@ class SubwayRenderer:
                 if cs[tgt_x] == chars.VERTICAL:
                     sx(tgt_x, chars.SPLIT_RIGHT, tgt_color)  # ├
 
-            # 3. New lanes — fork from nearest passing lane to the left
+            # New lanes — fork from leftmost passing lane
             for new_l in new_lanes:
                 color = self.colors.branch_color(new_l)
                 new_x = new_l * CW
                 src_cands = [l for l in passing if l < new_l]
-                src = min(src_cands) if src_cands else (min(above) if above else 0)
-                src_color = self.colors.branch_color(src)
-                src_x = src * CW
+                src2 = min(src_cands) if src_cands else (min(above) if above else 0)
+                src_color = self.colors.branch_color(src2)
+                src_x = src2 * CW
                 if cs[src_x] == chars.VERTICAL:
                     sx(src_x, chars.SPLIT_RIGHT, src_color)  # ├
                 elif cs[src_x] == " ":
@@ -180,118 +273,6 @@ class SubwayRenderer:
                 conn.append(ch, style=cl) if cl else conn.append(ch)
             result.append(conn)
 
-        return result
-    
-    def _render_horizontal_grid(self, processes: List[ProcessNode], max_lane: int) -> List[Text]:
-        """
-        Render horizontal layout using grid system (git-graph style).
-        
-        In horizontal mode:
-        - Each lane is a row (top to bottom)
-        - Processes flow left to right
-        - Annotations appear at the end of each row
-        """
-        from .grid import GridRenderer, CharacterSet
-        
-        # Calculate grid dimensions
-        # Each process gets 1 column, plus connector columns between
-        num_cols = len(processes) * 2 - 1
-        num_rows = max_lane + 1
-        
-        grid = GridRenderer(num_cols, num_rows)
-        chars = CharacterSet.round()
-        
-        # Build mapping of process names to column indices
-        process_cols = {}
-        for idx, node in enumerate(processes):
-            col = idx * 2
-            process_cols[node.name] = col
-        
-        # Draw each process
-        for idx, node in enumerate(processes):
-            col = idx * 2
-            
-            # Determine dot character and color
-            dot_color = self._lane_color(node)
-            
-            if node.status == ProcessStatus.COMPLETED:
-                dot_char = chars.DOT
-            elif node.status == ProcessStatus.FAILED:
-                dot_char = 'X'
-                dot_color = 'bright_red'
-            elif node.status == ProcessStatus.RUNNING:
-                dot_char = chars.DOT
-                dot_color = self.blink.get_running_style()
-            elif node.status == ProcessStatus.CACHED:
-                dot_char = chars.DOT_SECONDARY
-            else:  # PENDING
-                dot_char = chars.DOT_SECONDARY
-                dot_color = 'dim white'
-            
-            # Draw the dot
-            grid.set_char(node.lane, col, dot_char, dot_color)
-            
-            # Draw horizontal connections
-            if idx < len(processes) - 1:
-                connector_col = col + 1
-                
-                # Get children info for connections
-                child_lanes = [
-                    self.graph.nodes[c].lane 
-                    for c in node.children 
-                    if c in self.graph.nodes
-                ]
-                
-                if len(child_lanes) == 1 and child_lanes[0] == node.lane:
-                    # Simple horizontal continuation
-                    grid.set_char(node.lane, connector_col, chars.HORIZONTAL, dot_color)
-                elif len(child_lanes) > 0:
-                    # Lane changes - draw appropriately
-                    for child_lane in child_lanes:
-                        if child_lane == node.lane:
-                            grid.set_char(node.lane, connector_col, chars.HORIZONTAL, dot_color)
-                        else:
-                            # Vertical connection needed
-                            min_lane = min(node.lane, child_lane)
-                            max_lane = max(node.lane, child_lane)
-                            for row in range(min_lane, max_lane + 1):
-                                if row == node.lane:
-                                    grid.set_char(row, connector_col, chars.SPLIT_RIGHT if node.lane < child_lane else chars.SPLIT_LEFT, dot_color)
-                                elif row == child_lane:
-                                    grid.set_char(row, connector_col, chars.ARROW_RIGHT if node.lane < child_lane else chars.ARROW_LEFT, dot_color)
-                                else:
-                                    grid.set_char(row, connector_col, chars.VERTICAL, dot_color)
-        
-        # Build result lines with annotations
-        result = []
-        for lane in range(num_rows):
-            line = Text()
-            
-            # Build the grid line for this lane
-            for col in range(num_cols):
-                x = grid._col_to_x(col)
-                for offset in range(grid.COLUMN_WIDTH):
-                    grid_cell = grid.grid[lane][x + offset]
-                    if grid_cell.color:
-                        line.append(grid_cell.char, style=grid_cell.color)
-                    else:
-                        line.append(grid_cell.char)
-            
-            # Add annotation for this lane showing which processes are in it
-            lane_processes = [p for p in processes if p.lane == lane]
-            if lane_processes:
-                annotations = []
-                for p in lane_processes:
-                    ann = self._format_annotation(p)
-                    if len(ann) > 30:
-                        ann = ann[:27] + "..."
-                    annotations.append(ann)
-                
-                line.append("  ")
-                line.append(" → ".join(annotations), style="dim")
-            
-            result.append(line)
-        
         return result
 
     def _lane_color(self, node: ProcessNode) -> str:
@@ -328,17 +309,28 @@ class SubwayRenderer:
         if node.status == ProcessStatus.FAILED:
             return "bright_red bold"
         if node.status == ProcessStatus.RUNNING:
-            return f"{self.colors.branch_color(node.lane)} bold"
+            # Blink the annotation text in sync with the dot
+            base = self.colors.branch_color(node.lane)
+            return f"{base} bold" if self.blink.should_show_bright() else f"dim {base}"
         if node.status == ProcessStatus.PENDING:
             return "dim"
         if node.status == ProcessStatus.CACHED:
             return f"dim {self.colors.branch_color(node.lane)}"
         return self.colors.branch_color(node.lane)  # COMPLETED
     
-    def _format_annotation(self, node: ProcessNode) -> str:
-        """Format the annotation text for a process."""
-        annotation = node.annotation or node.name
+    def _format_annotation(self, node: ProcessNode, name_width: int = 0) -> str:
+        """Format the annotation text for a process.
         
+        If name_width > 0, the process-name portion is padded to that width
+        so the progress column (N of M) lines up across all rows.
+        """
+        annotation = node.annotation or node.name
+
+        # Split on " | " to separate name part from progress part
+        if " | " in annotation and name_width > 0:
+            left, right = annotation.split(" | ", 1)
+            annotation = f"{left:<{name_width}} | {right}"
+
         # Add duration if available
         if node.duration and node.status == ProcessStatus.COMPLETED:
             annotation += f" ({self._format_duration(node.duration)})"
@@ -361,11 +353,11 @@ class SubwayRenderer:
             return f"{hours}h {minutes}m"
 
     
-    def render_panel(self, orientation='vertical') -> Panel:
-        """Render the graph as a Rich Panel."""
-        lines = self.render_to_lines(orientation=orientation)
-        
-        # Combine lines into single text
+    def render_panel(self) -> Panel:
+        """Render the graph as a Rich Panel, fitting within the terminal height."""
+        available = max(4, (self.console.height or 40) - 4)
+        lines = self.render_to_lines(max_rows=available)
+
         text = Text()
         for i, line in enumerate(lines):
             text.append_text(line)
@@ -452,7 +444,6 @@ class SubwayLiveRenderer:
     
     def __init__(self, graph: SubwayGraph, refresh_per_second: int = 4, orientation: str = 'auto'):
         self.graph = graph
-        self.orientation = orientation
         self.renderer = SubwayRenderer(graph)
         self.refresh_per_second = refresh_per_second
         self.live = None
@@ -460,18 +451,24 @@ class SubwayLiveRenderer:
     def start(self):
         """Start the live rendering."""
         self.live = Live(
-            self.renderer.render_panel(orientation=self.orientation),
+            self.renderer.render_panel(),
             refresh_per_second=self.refresh_per_second,
             console=self.renderer.console
         )
         self.live.start()
-    
+
     def update(self):
         """Update the display with current graph state."""
         if self.live:
-            self.renderer.tick_animation()  # Advance blink animation
-            self.live.update(self.renderer.render_panel(orientation=self.orientation))
-    
+            self.renderer.tick_animation()
+            self.live.update(self.renderer.render_panel())
+
+    def render_final(self):
+        """Force a final render with blink in the bright phase, then stop."""
+        if self.live:
+            self.renderer.blink.frame = 0  # pin to bright state permanently
+            self.live.update(self.renderer.render_panel())
+
     def stop(self):
         """Stop the live rendering."""
         if self.live:
