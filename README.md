@@ -2,8 +2,6 @@
 
 Terminal visualization for Nextflow pipelines, enabling easy interpretation of different processes across multiple subworkflows simultaneously.
 
-https://github.com/user-attachments/assets/cc8790a0-91c2-400a-8efa-67c0c9cef67a
-
 ![nf-subway preview](docs/images/Image.png)
 
 ## Install
@@ -22,18 +20,6 @@ That's it. By default the original Nextflow output is hidden. Add `--original` t
 
 ```bash
 nextflow run pipeline.nf | nf-subway --original
-```
-
-Other options:
-
-```
---log FILE      Monitor a .nextflow.log file instead of stdin
---refresh
-
-https://github.com/user-attachments/assets/51c383a0-7d48-4101-8d67-8b98bd4ff4a7
-
- N     Refresh rate in Hz (default: 4)
---version       Show version
 ```
 
 ## Status indicators
