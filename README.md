@@ -6,8 +6,40 @@ A TUI that turns your Nextflow pipeline into a dynamic real-time progress inside
 
 ## Install
 
+**Recommended (HPC / shared systems):**
+
+```bash
+# pipx — isolated environment, no root needed, auto-manages PATH
+pipx install git+https://github.com/damouzo/nf-subway.git
+```
+
+---
+
+**With uv (fastest):**
+
+```bash
+uv tool install git+https://github.com/damouzo/nf-subway.git
+```
+
+---
+
+**With conda / mamba:**
+
+```bash
+conda install pip   # if needed
+pip install git+https://github.com/damouzo/nf-subway.git
+```
+
+---
+
+**Standard pip:**
+
 ```bash
 pip install git+https://github.com/damouzo/nf-subway.git
+```
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.bash_profile to persist
 ```
 
 ## Usage
